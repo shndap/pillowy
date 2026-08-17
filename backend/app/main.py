@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     scheduler_secret: str = "change-me"
     frontend_url: str = "http://localhost:5173"
     environment: str = "development"
+    demo_mode: bool = False
     class Config: env_file = ".env"
 
 settings = Settings()
@@ -89,7 +90,7 @@ def db():
     try: yield session
     finally: session.close()
 def verify_init_data(raw: str) -> dict:
-    if not raw and settings.environment == "development": return {"id": "demo", "first_name": "Alex"}
+    if not raw and (settings.environment == "development" or settings.demo_mode): return {"id": "demo", "first_name": "Alex"}
     if not raw: raise HTTPException(401, "Telegram initialization data is required")
     pairs = dict(parse_qsl(raw, keep_blank_values=True)); received = pairs.pop("hash", "")
     secret = hmac.new(b"WebAppData", settings.telegram_bot_token.encode(), sha256).digest()
