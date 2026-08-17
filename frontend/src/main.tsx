@@ -2,6 +2,7 @@ import React,{useEffect,useMemo,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Home, Package, BarChart3, Settings, Plus, Check, Clock3, ChevronRight, Sparkles, Pill, ShoppingBag} from 'lucide-react';
 import './styles.css';
+import './avatar.css';
 
 const API=import.meta.env.VITE_API_URL||'http://localhost:8000';
 type Item={schedule_id:number;medication_id:number;name:string;quantity:number;taken:boolean;at:string};
@@ -9,12 +10,13 @@ type Today={date:string;groups:Record<string,Item[]>};
 async function api(path:string, options:RequestInit={}){const tg=(window as any).Telegram?.WebApp; const headers:any={'Content-Type':'application/json','X-Telegram-Init-Data':tg?.initData||''}; const r=await fetch(API+path,{...options,headers:{...headers,...options.headers}}); if(!r.ok) throw new Error(await r.text()); return r.json();}
 function App(){
  const [tab,setTab]=useState('today'); const [today,setToday]=useState<Today>({date:new Date().toISOString(),groups:{}}); const [meds,setMeds]=useState<any[]>([]); const [busy,setBusy]=useState(false); const [notice,setNotice]=useState('');
+ const tgUser=(window as any).Telegram?.WebApp?.initDataUnsafe?.user; const firstName=tgUser?.first_name||'Alex'; const photoUrl=tgUser?.photo_url;
  const load=()=>Promise.all([api('/today'),api('/medications')]).then(([a,b])=>{setToday(a);setMeds(b)}).catch(()=>{});
  useEffect(()=>{(window as any).Telegram?.WebApp?.ready();load()},[]);
  const greeting=useMemo(()=>{const h=new Date().getHours();return h<12?'Good morning':h<18?'Good afternoon':'Good evening'},[]);
  async function takeAll(period:string){setBusy(true);try{const r=await api('/today/take-all?period='+encodeURIComponent(period),{method:'POST'});setNotice(r.message+' ✦');await load();setTimeout(()=>setNotice(''),2500)}catch(e:any){setNotice(e?.message||'Could not save')}finally{setBusy(false)}}
  const date=new Date(today.date); const pretty=date.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}); const all=Object.values(today.groups).flat(); const done=all.filter(x=>x.taken).reduce((n,x)=>n+x.quantity,0), total=all.reduce((n,x)=>n+x.quantity,0); const progress=total?Math.round(done/total*100):0;
- return <div className="app"><header><div className="eyebrow"><span className="dot"/> PRIVATE WELLNESS</div><div className="topline"><div><h1>{tab==='today'?greeting+', <span>♥</span>':tab==='cabinet'?'Your cabinet':tab==='history'?'Your progress':'Settings'}</h1><p>{tab==='today'?pretty:'Small steps, every day.'}</p></div><div className="avatar">A</div></div></header>
+ return <div className="app"><header><div className="eyebrow"><span className="dot"/> PRIVATE WELLNESS</div><div className="topline"><div><h1>{tab==='today'?<>{greeting}, <span>♥</span></>:tab==='cabinet'?'Your cabinet':tab==='history'?'Your progress':'Settings'}</h1><p>{tab==='today'?pretty:`${firstName}'s calm routine.`}</p></div><div className="avatar">{photoUrl?<img src={photoUrl} alt={firstName}/>:firstName.charAt(0).toUpperCase()}</div></div></header>
  {notice&&<div className="toast"><Check size={16}/>{notice}</div>}
  <main>{tab==='today'?<TodayView groups={today.groups} progress={progress} busy={busy} onTake={takeAll}/>:tab==='cabinet'?<Cabinet meds={meds} onAdded={load}/>:tab==='history'?<History/>:<SettingsView/>}</main>
  <nav>{[['today',Home,'Today'],['cabinet',Package,'Cabinet'],['history',BarChart3,'History'],['settings',Settings,'More']].map(([id,I,label]:any)=><button className={tab===id?'active':''} onClick={()=>setTab(id)} key={id}><I size={20}/><small>{label}</small></button>)}</nav></div>
