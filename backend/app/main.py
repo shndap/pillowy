@@ -126,6 +126,11 @@ def add_schedule(medication_id: int, body: ScheduleIn, user: User = Depends(curr
     med = session.scalar(select(Medication).where(Medication.id==medication_id, Medication.user_id==user.id))
     if not med: raise HTTPException(404, "Medication not found")
     schedule = Schedule(medication_id=med.id, **body.model_dump()); session.add(schedule); session.commit(); return {"id":schedule.id}
+@app.delete("/schedules/{schedule_id}")
+def delete_schedule(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+    schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id == schedule_id, Medication.user_id == user.id))
+    if not schedule: raise HTTPException(404, "Schedule not found")
+    session.delete(schedule); session.commit(); return {"deleted": True}
 @app.post("/inventory/{medication_id}/purchase")
 def purchase(medication_id: int, body: PurchaseIn, user: User = Depends(current_user), session: Session = Depends(db)):
     med = session.scalar(select(Medication).where(Medication.id==medication_id, Medication.user_id==user.id))
