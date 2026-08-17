@@ -107,6 +107,8 @@ def current_user(telegram_init_data: Optional[str] = Header(None, alias="X-Teleg
 
 class MedicationIn(BaseModel): name: str = Field(min_length=1, max_length=120); description: Optional[str] = None; inventory: int = Field(0, ge=0)
 class ScheduleIn(BaseModel): period: str = "Morning"; at: time; quantity: int = Field(1, ge=1); reminder_enabled: bool = True
+class MedicationPatch(BaseModel): name: Optional[str] = Field(None, min_length=1, max_length=120); description: Optional[str] = None; inventory: Optional[int] = Field(None, ge=0); active: Optional[bool] = None
+class SchedulePatch(BaseModel): period: Optional[str] = None; at: Optional[time] = None; quantity: Optional[int] = Field(None, ge=1); reminder_enabled: Optional[bool] = None; enabled: Optional[bool] = None
 class PurchaseIn(BaseModel): quantity: int = Field(gt=0)
 class IntakeIn(BaseModel): schedule_id: int
 
@@ -121,6 +123,19 @@ def medications(user: User = Depends(current_user), session: Session = Depends(d
 @app.post("/medications")
 def add_medication(body: MedicationIn, user: User = Depends(current_user), session: Session = Depends(db)):
     med = Medication(user_id=user.id, name=body.name, description=body.description, inventory=body.inventory); session.add(med); session.commit(); return {"id":med.id}
+@app.patch("/medications/{medication_id}")
+def edit_medication(medication_id: int, body: MedicationPatch, user: User = Depends(current_user), session: Session = Depends(db)):
+    med = session.scalar(select(Medication).where(Medication.id == medication_id, Medication.user_id == user.id))
+    if not med: raise HTTPException(404, "Medication not found")
+    for key, value in body.model_dump(exclude_unset=True).items(): setattr(med, key, value)
+    session.commit(); return {"updated": True}
+@app.delete("/medications/{medication_id}")
+def delete_medication(medication_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
+    med = session.scalar(select(Medication).where(Medication.id == medication_id, Medication.user_id == user.id))
+    if not med: raise HTTPException(404, "Medication not found")
+    med.active = False
+    for schedule in med.schedules: schedule.enabled = False
+    session.commit(); return {"deleted": True}
 @app.post("/medications/{medication_id}/schedules")
 def add_schedule(medication_id: int, body: ScheduleIn, user: User = Depends(current_user), session: Session = Depends(db)):
     med = session.scalar(select(Medication).where(Medication.id==medication_id, Medication.user_id==user.id))
@@ -131,6 +146,12 @@ def delete_schedule(schedule_id: int, user: User = Depends(current_user), sessio
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id == schedule_id, Medication.user_id == user.id))
     if not schedule: raise HTTPException(404, "Schedule not found")
     session.delete(schedule); session.commit(); return {"deleted": True}
+@app.patch("/schedules/{schedule_id}")
+def edit_schedule(schedule_id: int, body: SchedulePatch, user: User = Depends(current_user), session: Session = Depends(db)):
+    schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id == schedule_id, Medication.user_id == user.id))
+    if not schedule: raise HTTPException(404, "Schedule not found")
+    for key, value in body.model_dump(exclude_unset=True).items(): setattr(schedule, key, value)
+    session.commit(); return {"updated": True}
 @app.post("/inventory/{medication_id}/purchase")
 def purchase(medication_id: int, body: PurchaseIn, user: User = Depends(current_user), session: Session = Depends(db)):
     med = session.scalar(select(Medication).where(Medication.id==medication_id, Medication.user_id==user.id))
