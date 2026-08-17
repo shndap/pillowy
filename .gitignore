@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+credentials.txt
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+dist/
+.venv/

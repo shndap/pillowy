@@ -1,0 +1,1325 @@
+# Telegram Pill Tracker — Development Prompt
+
+Build a polished, production-quality **Telegram Mini App for personal pill/medication tracking**.
+
+The application is primarily for two people and should feel like a beautiful, thoughtful personal wellness app rather than a generic Telegram bot.
+
+The application must be designed so it can be deployed **entirely on free tiers**.
+
+---
+
+# 1. Technology Stack
+
+Use:
+
+### Frontend
+
+* React
+* TypeScript
+* Vite
+* Tailwind CSS
+* Telegram Mini Apps SDK/API
+
+### Backend
+
+* Python
+* FastAPI
+* aiogram
+* SQLAlchemy
+* Alembic
+
+### Database
+
+* PostgreSQL
+* Supabase for production
+* SQLite may optionally be used for local development only
+
+### Deployment target
+
+The architecture should be compatible with:
+
+* Cloudflare Pages → frontend
+* Render Free Web Service → backend
+* Supabase Free → PostgreSQL database
+* Telegram → bot + Mini App
+
+Do NOT design the application around paid infrastructure.
+
+---
+
+# 2. CRITICAL ARCHITECTURAL REQUIREMENT: REMINDERS
+
+Do NOT depend on a continuously running scheduler inside the FastAPI/Render process.
+
+Render's free web service may sleep when idle.
+
+Therefore:
+
+```text
+❌ BAD
+
+Render
+  └── FastAPI
+       └── APScheduler
+            └── waits for 08:00
+```
+
+Do NOT use this architecture for medication reminders.
+
+Instead, the reminder system must be **scheduler-independent**.
+
+The backend must expose an idempotent scheduler endpoint that can be triggered externally.
+
+Conceptually:
+
+```text
+External Scheduler
+       │
+       │ periodic request
+       ▼
+FastAPI /internal/scheduler/tick
+       │
+       ▼
+Find reminders that are due
+       │
+       ▼
+Send Telegram notifications
+       │
+       ▼
+Mark notifications as sent
+```
+
+The exact external scheduler can be selected during deployment, but the backend must NOT assume that the FastAPI process remains alive continuously.
+
+The scheduler endpoint must be safe to call repeatedly.
+
+If it is called twice for the same minute, the user must NOT receive duplicate reminders.
+
+---
+
+# 3. Scheduler Design
+
+Create a scheduler service with a function conceptually equivalent to:
+
+```python
+process_due_notifications(now)
+```
+
+It should:
+
+1. Determine the current time in each user's timezone.
+2. Find all medication reminders that are due.
+3. Determine which doses are still outstanding.
+4. Create/send Telegram notifications.
+5. Record that the notification was sent.
+6. Never send the same notification twice.
+
+Use a database-backed notification record or equivalent idempotency mechanism.
+
+For example:
+
+```text
+notification_log
+
+id
+user_id
+schedule_id
+scheduled_for
+notification_type
+sent_at
+```
+
+Create a uniqueness constraint around the relevant notification identity.
+
+For example:
+
+```text
+(user_id, schedule_id, scheduled_for, notification_type)
+```
+
+This prevents duplicate notifications if the scheduler runs multiple times.
+
+---
+
+# 4. Reminder polling frequency
+
+The scheduler should ideally call the backend approximately once per minute.
+
+The backend should NOT require exact-second timing.
+
+For example, if a medication is scheduled for:
+
+```text
+08:00
+```
+
+and the scheduler runs at:
+
+```text
+08:00:12
+```
+
+the reminder should be sent.
+
+If it runs at:
+
+```text
+08:01:03
+```
+
+it should still be able to recognize that the 08:00 reminder is due, assuming it has not already been sent.
+
+Do not rely on:
+
+```python
+if current_time == scheduled_time:
+```
+
+because that is fragile.
+
+Instead use a small due window / scheduled timestamp approach.
+
+---
+
+# 5. Main concept
+
+The application tracks:
+
+1. Medications
+2. Medication schedules
+3. Current pill inventory
+4. Scheduled doses
+5. Completed doses
+6. Purchase history
+7. Intake history
+8. Low-inventory warnings
+9. Medication reminders
+
+The Telegram bot primarily handles:
+
+* notifications
+* reminder actions
+* launching the Mini App
+
+The Mini App provides the primary interface.
+
+---
+
+# 6. Main Dashboard
+
+When the Mini App opens, show a beautiful dashboard.
+
+Include:
+
+* Greeting
+* Current date
+* Today's medication progress
+* Upcoming medication schedule
+* Inventory warnings
+* Quick actions
+
+Conceptually:
+
+```text
+Good morning, ❤️
+
+Monday, August 17
+
+TODAY
+
+🌅 Morning
+✓ Vitamin D       1 / 1
+✓ Magnesium       2 / 2
+
+☀️ Afternoon
+○ Omega 3         0 / 1
+
+🌙 Evening
+○ Magnesium       0 / 1
+
+
+[ ✓ I took my morning pills ]
+
+────────────────────
+
+📦 Cabinet
+📊 History
+⚙️ Manage
+```
+
+The exact visual design should be significantly more polished than this example.
+
+---
+
+# 7. Medication Model
+
+Each medication should contain:
+
+* id
+* user_id
+* name
+* optional description
+* active/inactive
+* created_at
+* updated_at
+
+Do NOT assume a medication has only one daily dose.
+
+A medication may have different quantities at different times.
+
+Example:
+
+```text
+Magnesium
+
+Morning:  1
+Evening:  1
+
+Daily total: 2
+```
+
+Another:
+
+```text
+Vitamin D
+
+Morning: 1
+
+Daily total: 1
+```
+
+---
+
+# 8. Medication Schedules
+
+A schedule represents a specific dose at a specific time.
+
+Each schedule should contain:
+
+* id
+* medication_id
+* quantity
+* time
+* period/name
+* enabled
+* reminder_enabled
+
+Supported predefined periods:
+
+* Morning
+* Afternoon
+* Evening
+* Night
+
+Also support custom times.
+
+Example:
+
+```text
+🌅 Morning — 08:00
+
+Vitamin D × 1
+Magnesium × 2
+```
+
+and:
+
+```text
+🌙 Evening — 22:00
+
+Magnesium × 1
+Omega 3 × 1
+```
+
+---
+
+# 9. CORE UX: PRESET "I TOOK MY PILLS"
+
+The most common medication-taking action must require **one tap**.
+
+The user should NOT have to repeatedly enter:
+
+* medication name
+* quantity
+
+for normal scheduled medication.
+
+For example, if the morning schedule contains:
+
+```text
+Vitamin D × 1
+Magnesium × 2
+```
+
+the dashboard should show:
+
+```text
+[ ✓ I took my morning pills ]
+```
+
+When pressed:
+
+1. Find all enabled morning schedules.
+2. Determine today's doses.
+3. Determine which doses have already been recorded.
+4. Record only outstanding doses.
+5. Decrease inventory accordingly.
+6. Mark the scheduled doses complete.
+7. Return a confirmation.
+
+Example:
+
+```text
+✓ Morning pills recorded
+
+Vitamin D ×1
+Magnesium ×2
+
+You're all set ❤️
+```
+
+The user should never be asked:
+
+> Which pills?
+
+or:
+
+> How many?
+
+for this normal preset flow.
+
+---
+
+# 10. Partial Completion
+
+Users must also be able to record individual medications.
+
+Example:
+
+```text
+🌅 Morning
+
+✓ Vitamin D       1 / 1
+○ Magnesium       0 / 2
+
+[ Take Magnesium ]
+[ ✓ Take all morning pills ]
+```
+
+If Vitamin D has already been taken and the user presses:
+
+```text
+✓ Take all morning pills
+```
+
+the system must NOT record Vitamin D again.
+
+Only outstanding doses should be recorded.
+
+Example:
+
+```text
+Initial:
+
+Vitamin D   0/1
+Magnesium   0/2
+
+User takes Vitamin D:
+
+Vitamin D   1/1
+Magnesium   0/2
+
+User presses "I took my morning pills":
+
+Vitamin D   1/1
+Magnesium   2/2
+```
+
+Inventory should decrease only for Magnesium during the second action.
+
+---
+
+# 11. Duplicate Protection
+
+Medication intake must be idempotent.
+
+Repeatedly pressing:
+
+```text
+✓ I took my morning pills
+```
+
+must never cause duplicate intake.
+
+The backend must enforce this.
+
+Do NOT rely only on frontend state.
+
+The database/business logic should ensure that the same scheduled dose cannot be recorded twice for the same user/date.
+
+---
+
+# 12. Inventory
+
+Display medication inventory clearly.
+
+Example:
+
+```text
+📦 MY CABINET
+
+Vitamin D
+23 pills
+~23 days remaining
+
+Magnesium
+45 pills
+~22 days remaining
+
+Omega 3
+8 pills
+~8 days remaining
+
+[ + Add pills ]
+```
+
+Calculate remaining supply based on:
+
+```text
+inventory / required daily quantity
+```
+
+For medications with multiple scheduled doses, daily quantity is the sum of all enabled scheduled doses.
+
+Never allow inventory to become negative.
+
+---
+
+# 13. Add Purchased Pills
+
+Make adding inventory extremely easy.
+
+Example:
+
+```text
+Magnesium
+
+45 pills remaining
+
+[ + Add pills ]
+```
+
+Then:
+
+```text
+How many did you buy?
+
+[ 10 ] [ 20 ] [ 30 ]
+[ Custom ]
+```
+
+Adding pills must:
+
+1. Increase inventory.
+2. Create an inventory transaction.
+3. Reset applicable low-stock warning state.
+
+Example:
+
+```text
++30 Magnesium
+
+45 → 75 pills
+```
+
+---
+
+# 14. Inventory Transactions
+
+Track all inventory changes.
+
+Transaction fields:
+
+* id
+* medication_id
+* quantity
+* transaction_type
+* created_at
+
+Types:
+
+```text
+PURCHASE
+INTAKE
+MANUAL_ADJUSTMENT
+```
+
+Example:
+
+```text
+MAGNESIUM
+
++30  Purchased        Aug 17
+-2   Morning dose     Aug 17
+-1   Evening dose     Aug 16
++20  Purchased        Aug 10
+```
+
+---
+
+# 15. Low Inventory Warnings
+
+Calculate days of supply remaining.
+
+Automatically notify at approximately:
+
+* 7 days
+* 2 days
+* 1 day
+
+Examples:
+
+### Seven days
+
+```text
+🌸 Just a little reminder
+
+Magnesium has about one week
+of pills left.
+
+You might want to pick up
+another box.
+```
+
+### Two days
+
+```text
+⚠️ Running low
+
+Magnesium has approximately
+2 days remaining.
+```
+
+### One day
+
+```text
+🚨 Almost out
+
+Magnesium has approximately
+1 day remaining.
+
+Don't forget to buy more ❤️
+```
+
+Do not repeatedly send the same warning.
+
+Store warning state in the database or derive it from a notification log.
+
+When inventory is increased, allow the warning cycle to reset.
+
+---
+
+# 16. Scheduled Medication Reminders
+
+At the configured time, the bot sends a Telegram notification.
+
+Example:
+
+```text
+🌅 Good morning ❤️
+
+It's time for your morning pills.
+
+Vitamin D ×1
+Magnesium ×2
+
+[ ✓ I took my morning pills ]
+[ Open pill cabinet ]
+```
+
+The button must invoke the same preset intake logic as the Mini App.
+
+The user should be able to complete the medication directly from the Telegram notification without manually entering quantities.
+
+---
+
+# 17. Outstanding Dose Logic
+
+Reminders must account for already-completed doses.
+
+For example:
+
+```text
+08:00 schedule:
+
+Vitamin D ×1
+Magnesium ×2
+```
+
+If Vitamin D was already recorded, the reminder should say:
+
+```text
+🌅 Morning reminder
+
+💊 Magnesium ×2
+
+[ ✓ I took my morning pills ]
+```
+
+Do not remind the user to take medications that have already been completed.
+
+---
+
+# 18. Time Zones
+
+Each user must have a timezone.
+
+Use the user's timezone for:
+
+* today's date
+* medication schedules
+* reminders
+* low-stock warning dates
+* history
+
+Do not use UTC directly for user-facing medication times.
+
+Store timestamps in UTC where appropriate, but convert to the user's timezone for scheduling and display.
+
+---
+
+# 19. History
+
+Include a history screen.
+
+Show:
+
+* today's completion
+* previous days
+* medication-specific history
+* intake quantities
+
+Example:
+
+```text
+📊 THIS WEEK
+
+Mon   ██████████  100%
+Sun   ██████████  100%
+Sat   ███████░░░   70%
+Fri   ██████████  100%
+Thu   ██████████  100%
+```
+
+Medication-specific:
+
+```text
+MAGNESIUM
+
+Today       2 / 2 ✓
+Yesterday   2 / 2 ✓
+Saturday    1 / 2
+Friday      2 / 2 ✓
+```
+
+Keep it simple and visually attractive.
+
+---
+
+# 20. Medication Management
+
+Allow:
+
+* Add medication
+* Edit medication
+* Deactivate medication
+* Delete medication
+* Change quantities
+* Change schedules
+* Change reminder times
+* Enable/disable reminders
+
+Historical intake records must remain valid even if medication settings are later changed.
+
+---
+
+# 21. Telegram Authentication
+
+Use Telegram Mini App authentication.
+
+Do NOT create username/password authentication.
+
+When the Mini App launches:
+
+1. Receive Telegram Mini App initialization data.
+2. Send initialization data to FastAPI.
+3. Verify it server-side using the Telegram bot token.
+4. Resolve the Telegram user.
+5. Create the user if necessary.
+6. Return authenticated application data.
+
+Never trust an arbitrary Telegram user ID from the frontend.
+
+---
+
+# 22. Telegram Bot
+
+The bot should support at minimum:
+
+```text
+/start
+```
+
+and provide a button that launches the Mini App.
+
+The bot must also send scheduled notifications.
+
+Example:
+
+```text
+🌙 Evening pills
+
+Magnesium ×1
+
+[ ✓ I took my evening pills ]
+[ Open cabinet ]
+```
+
+---
+
+# 23. Mini App Design
+
+This is a major priority.
+
+Make the UI **beautiful as hell**.
+
+It should feel like a premium personal wellness app.
+
+Design characteristics:
+
+* mobile-first
+* elegant
+* warm
+* minimal
+* modern
+* subtle animations
+* excellent typography
+* generous spacing
+* beautiful cards
+* clear progress indicators
+* tasteful icons
+* tasteful emoji
+* polished empty states
+* polished loading states
+* polished error states
+* smooth transitions
+
+Avoid:
+
+* generic admin-dashboard appearance
+* Bootstrap-like layouts
+* excessive gradients
+* excessive emoji
+* clutter
+* ugly tables
+* desktop-first design
+* unnecessary text
+
+The common action should always be visually prominent.
+
+Use Telegram theme variables so the application integrates naturally with Telegram's light/dark themes.
+
+---
+
+# 24. Navigation
+
+Use a simple mobile bottom navigation.
+
+Conceptually:
+
+```text
+┌─────────────────────────────┐
+│                             │
+│         APP CONTENT         │
+│                             │
+├─────────────────────────────┤
+│   🏠       📦       📊      ⚙️ │
+│  Today   Cabinet  History  More│
+└─────────────────────────────┘
+```
+
+The primary action should appear prominently on Today.
+
+---
+
+# 25. Backend API
+
+Create a clean API around concepts such as:
+
+```text
+GET    /me
+
+GET    /medications
+POST   /medications
+PATCH  /medications/{id}
+DELETE /medications/{id}
+
+GET    /today
+
+GET    /inventory
+POST   /inventory/{medication_id}/purchase
+
+POST   /intakes
+POST   /schedules/{schedule_id}/take
+
+GET    /history
+GET    /medications/{id}/history
+
+POST   /internal/scheduler/tick
+```
+
+The exact endpoint design can be changed if a better architecture is appropriate.
+
+The scheduler endpoint must be protected so arbitrary public users cannot trigger it.
+
+Use an internal secret/token or another appropriate mechanism.
+
+---
+
+# 26. Database Design
+
+Use PostgreSQL in production.
+
+Suggested tables:
+
+```text
+users
+
+medications
+
+medication_schedules
+
+intakes
+
+inventory
+
+inventory_transactions
+
+notification_log
+```
+
+Important constraints should be enforced at the database/business-logic level.
+
+Especially:
+
+* no negative inventory
+* no duplicate intake for the same scheduled dose/date
+* no duplicate notification for the same scheduled notification
+
+---
+
+# 27. Atomic Medication Intake
+
+Recording a dose must be transactional.
+
+Conceptually:
+
+```text
+BEGIN
+
+1. Find scheduled dose.
+2. Check whether it has already been taken.
+3. Check inventory.
+4. Create intake record.
+5. Decrease inventory.
+6. Create inventory transaction.
+7. Commit.
+```
+
+If anything fails:
+
+```text
+ROLLBACK
+```
+
+Never allow:
+
+```text
+intake recorded
+but inventory unchanged
+```
+
+or:
+
+```text
+inventory decreased
+but intake not recorded
+```
+
+---
+
+# 28. Insufficient Inventory
+
+If a dose requires more pills than currently exist:
+
+```text
+⚠️ Not enough pills
+
+You have 1 Magnesium pill left,
+but this dose requires 2.
+
+[ Add pills ]
+[ Cancel ]
+```
+
+Do not allow negative inventory.
+
+The user may still be able to record a smaller manually entered quantity if the product design supports partial doses, but the normal preset action should not silently consume more pills than exist.
+
+---
+
+# 29. Free Deployment Requirements
+
+The application must be deployable using:
+
+```text
+Frontend
+→ Cloudflare Pages
+
+Backend
+→ Render Free Web Service
+
+Database
+→ Supabase Free PostgreSQL
+
+Bot
+→ aiogram running with the backend
+```
+
+Do not depend on:
+
+* paid Redis
+* paid queues
+* paid cron services
+* persistent VPS
+* paid database
+* paid domain
+
+unless clearly marked as optional.
+
+The application should work on free infrastructure.
+
+---
+
+# 30. Scheduler Deployment
+
+Because Render Free may sleep, do NOT rely on a continuously running background scheduler.
+
+The backend should expose:
+
+```text
+POST /internal/scheduler/tick
+```
+
+An external free scheduler should periodically call this endpoint.
+
+The scheduler endpoint should:
+
+* be idempotent
+* process missed reminders within a reasonable window
+* prevent duplicate notifications
+* use database-backed notification records
+* handle timezone conversion
+* handle multiple users
+* handle multiple medications
+* handle low-stock notifications
+* return useful logs/status information
+
+The backend should be able to safely process a scheduler tick even if it has been several minutes since the previous tick.
+
+---
+
+# 31. Scheduler Failure Recovery
+
+If the backend was asleep or temporarily unavailable, the next scheduler invocation should be able to detect missed notifications.
+
+Do not simply compare:
+
+```text
+current_time == reminder_time
+```
+
+Instead, store scheduled notification timestamps and process notifications that are:
+
+```text
+scheduled_for <= now
+AND
+not already sent
+AND
+within a reasonable expiration window
+```
+
+Do not send extremely old reminders after the user has been offline for hours/days.
+
+The exact expiration policy can be configurable.
+
+---
+
+# 32. Testing
+
+Write automated tests for:
+
+### Intake
+
+```text
+take dose
+→ intake created
+→ inventory decreases
+```
+
+### Duplicate intake
+
+```text
+take morning dose
+take morning dose again
+→ only one intake
+→ inventory decreases once
+```
+
+### Partial completion
+
+```text
+take Vitamin D individually
+take all morning pills
+→ Vitamin D not duplicated
+→ remaining medications recorded
+```
+
+### Inventory
+
+```text
+purchase 30
+→ inventory +30
+```
+
+### Insufficient inventory
+
+```text
+inventory < dose
+→ intake rejected
+→ inventory unchanged
+```
+
+### Low stock
+
+Test:
+
+```text
+7 days
+2 days
+1 day
+```
+
+### Notification idempotency
+
+```text
+scheduler tick
+scheduler tick again
+→ only one notification
+```
+
+### Missed scheduler invocation
+
+```text
+scheduled reminder
+↓
+scheduler unavailable
+↓
+scheduler runs later
+↓
+notification is still processed if within allowed window
+```
+
+### Timezones
+
+Test users in different timezones.
+
+---
+
+# 33. Environment Variables
+
+Use environment variables for:
+
+```text
+TELEGRAM_BOT_TOKEN
+DATABASE_URL
+SCHEDULER_SECRET
+FRONTEND_URL
+ENVIRONMENT
+```
+
+Provide:
+
+```text
+.env.example
+```
+
+Never commit secrets.
+
+Never expose `TELEGRAM_BOT_TOKEN` to the frontend.
+
+---
+
+# 34. Project Structure
+
+Use a clean structure such as:
+
+```text
+pill-tracker/
+│
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── hooks/
+│   │   ├── api/
+│   │   └── ...
+│   ├── package.json
+│   └── ...
+│
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   ├── models/
+│   │   ├── schemas/
+│   │   ├── services/
+│   │   ├── bot/
+│   │   ├── scheduler/
+│   │   ├── database/
+│   │   └── main.py
+│   │
+│   ├── tests/
+│   ├── requirements.txt
+│   └── Dockerfile
+│
+├── migrations/
+│
+├── .env.example
+├── docker-compose.yml
+└── README.md
+```
+
+---
+
+# 35. Development Process
+
+Build in this order:
+
+### Phase 1 — Foundation
+
+* Project structure
+* PostgreSQL/SQLAlchemy
+* Alembic
+* Telegram authentication
+* FastAPI
+* React Mini App
+* Bot
+* Basic deployment configuration
+
+### Phase 2 — Core functionality
+
+* Medication CRUD
+* Schedules
+* Inventory
+* Intake
+* Preset "I took my pills"
+* Duplicate protection
+
+### Phase 3 — Notifications
+
+* Scheduled medication reminders
+* External scheduler endpoint
+* Notification idempotency
+* Low-stock warnings
+* Missed-reminder recovery
+
+### Phase 4 — UX
+
+* Dashboard
+* Cabinet
+* History
+* Medication management
+* Animations
+* Empty/loading/error states
+* Telegram theme integration
+
+### Phase 5 — Testing & deployment
+
+* Automated tests
+* Production database migrations
+* Cloudflare Pages deployment
+* Render deployment
+* Supabase configuration
+* Telegram Mini App configuration
+* External scheduler configuration
+* End-to-end testing
+
+---
+
+# 36. Important Product Principle
+
+This application is a **tracker**, not a medical decision-making system.
+
+The application should only track medications, schedules, quantities, inventory, and user-entered information.
+
+Do not implement:
+
+* medical recommendations
+* dosage recommendations
+* diagnosis
+* drug interaction analysis
+* AI medical advice
+* automatic changes to prescribed quantities
+
+The bot should remind the user about the schedule they configured; it should not decide what medication they should take.
+
+---
+
+# 37. Final UX Goal
+
+The finished product should feel like:
+
+> **A tiny private pill cabinet living inside Telegram.**
+
+The ideal common interaction is:
+
+```text
+Telegram notification
+        ↓
+🌅 Morning pills
+
+Vitamin D ×1
+Magnesium ×2
+
+[ ✓ I took my morning pills ]
+        ↓
+Backend identifies today's morning schedules
+        ↓
+Checks which doses are already completed
+        ↓
+Records only outstanding doses
+        ↓
+Updates inventory atomically
+        ↓
+Returns beautiful confirmation
+```
+
+The user should almost never need to type anything.
+
+The application should prioritize:
+
+**one tap → done.**
+
+Build the complete functional MVP first. Then invest heavily in visual polish and interaction quality.
+
+Do not add unnecessary features such as social sharing, medical advice, AI recommendations, or complicated analytics.
