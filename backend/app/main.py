@@ -11,7 +11,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-from aiogram import Bot
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -84,6 +86,7 @@ class NotificationLog(Base):
 Base.metadata.create_all(engine)
 app = FastAPI(title="Pill Cabinet API")
 app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_url, "http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
+bot_task = None
 
 def db():
     session = SessionLocal()
@@ -105,6 +108,53 @@ def current_user(telegram_init_data: Optional[str] = Header(None, alias="X-Teleg
         user = User(telegram_id=int(tid), first_name=info.get("first_name", "Friend")); session.add(user); session.commit(); session.refresh(user)
     return user
 
+def bot_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Open Pill Cabinet", web_app=WebAppInfo(url=settings.frontend_url))]])
+
+async def run_bot():
+    if not settings.telegram_bot_token: return
+    bot = Bot(settings.telegram_bot_token)
+    dispatcher = Dispatcher()
+
+    @dispatcher.message(CommandStart())
+    async def start(message: Message):
+        session = SessionLocal()
+        try:
+            tg_user = message.from_user
+            user = session.scalar(select(User).where(User.telegram_id == tg_user.id))
+            if not user:
+                user = User(telegram_id=tg_user.id, first_name=tg_user.first_name or "Friend"); session.add(user); session.commit()
+            await message.answer(f"Welcome to your private pill cabinet, {tg_user.first_name} ✨\n\nA gentler way to remember the routines you chose for yourself.\n\nYour cabinet is ready whenever you are.", reply_markup=bot_keyboard())
+        finally: session.close()
+
+    @dispatcher.callback_query(F.data.startswith("take:"))
+    async def take_callback(callback: CallbackQuery):
+        schedule_id = int(callback.data.split(":", 1)[1]); session = SessionLocal()
+        try:
+            user = session.scalar(select(User).where(User.telegram_id == callback.from_user.id)); schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id == schedule_id, Medication.user_id == (user.id if user else -1)))
+            if not user or not schedule: await callback.answer("This routine is no longer active.", show_alert=True); return
+            try:
+                local_day = datetime.now(ZoneInfo(user.timezone)).date()
+            except Exception: local_day = date.today()
+            record_schedule(session, user, schedule, local_day); session.commit(); await callback.answer("Recorded ✨");
+            if callback.message: await callback.message.edit_text("✓ Dose recorded\n\nYou’re all set for this routine. 💚")
+        except HTTPException as error:
+            session.rollback(); await callback.answer(str(error.detail), show_alert=True)
+        finally: session.close()
+
+    await bot.set_my_commands([BotCommand(command="start", description="Open your pill cabinet")])
+    try: await dispatcher.start_polling(bot, handle_signals=False)
+    finally: await bot.session.close()
+
+@app.on_event("startup")
+async def start_bot_worker():
+    global bot_task
+    if settings.telegram_bot_token: bot_task = asyncio.create_task(run_bot())
+
+@app.on_event("shutdown")
+async def stop_bot_worker():
+    if bot_task: bot_task.cancel()
+
 class MedicationIn(BaseModel): name: str = Field(min_length=1, max_length=120); description: Optional[str] = None; inventory: int = Field(0, ge=0)
 class ScheduleIn(BaseModel): period: str = "Morning"; at: time; quantity: int = Field(1, ge=1); reminder_enabled: bool = True
 class MedicationPatch(BaseModel): name: Optional[str] = Field(None, min_length=1, max_length=120); description: Optional[str] = None; inventory: Optional[int] = Field(None, ge=0); active: Optional[bool] = None
@@ -120,6 +170,15 @@ def me(user: User = Depends(current_user)): return {"first_name": user.first_nam
 def medications(user: User = Depends(current_user), session: Session = Depends(db)):
     meds = session.scalars(select(Medication).where(Medication.user_id == user.id, Medication.active == True)).all()
     return [{"id":m.id,"name":m.name,"description":m.description,"inventory":m.inventory,"schedules":[{"id":s.id,"period":s.period,"at":s.at.strftime("%H:%M"),"quantity":s.quantity,"reminder_enabled":s.reminder_enabled} for s in m.schedules if s.enabled]} for m in meds]
+@app.get("/routines")
+def routines(user: User = Depends(current_user), session: Session = Depends(db)):
+    schedules = session.scalars(select(Schedule).join(Medication).where(Medication.user_id == user.id, Medication.active == True, Schedule.enabled == True)).all()
+    groups: dict[str, list] = {}
+    for schedule in schedules:
+        medication = session.get(Medication, schedule.medication_id)
+        key = f"{schedule.period}|{schedule.at.strftime('%H:%M')}"
+        groups.setdefault(key, []).append({"id": schedule.id, "medication_id": medication.id, "medication_name": medication.name, "medicationName": medication.name, "period": schedule.period, "at": schedule.at.strftime("%H:%M"), "quantity": schedule.quantity})
+    return list(groups.values())
 @app.post("/medications")
 def add_medication(body: MedicationIn, user: User = Depends(current_user), session: Session = Depends(db)):
     med = Medication(user_id=user.id, name=body.name, description=body.description, inventory=body.inventory); session.add(med); session.commit(); return {"id":med.id}
@@ -164,6 +223,9 @@ def record_schedule(session: Session, user: User, schedule: Schedule, day: date)
     med = session.get(Medication, schedule.medication_id)
     if med.inventory < schedule.quantity: raise HTTPException(409, f"Not enough {med.name} pills")
     med.inventory -= schedule.quantity; session.add(Intake(user_id=user.id, medication_id=med.id, schedule_id=schedule.id, taken_on=day, quantity=schedule.quantity)); session.add(InventoryTransaction(medication_id=med.id, quantity=-schedule.quantity, transaction_type="INTAKE")); return True
+async def send_reminder(chat_id: int, text: str, schedule_id: int):
+    async with Bot(settings.telegram_bot_token) as bot:
+        await bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✓ I took these pills", callback_data=f"take:{schedule_id}")],[InlineKeyboardButton(text="Open pill cabinet", web_app=WebAppInfo(url=settings.frontend_url))]]))
 @app.post("/schedules/{schedule_id}/take")
 def take(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id==schedule_id, Medication.user_id==user.id));
@@ -202,7 +264,7 @@ def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Sess
                     if settings.telegram_bot_token:
                         text = f"💊 {schedule.period} pills\n\n{med.name} ×{schedule.quantity}\n\nOpen your pill cabinet to record this dose."
                         try:
-                            asyncio.run(Bot(settings.telegram_bot_token).send_message(user.telegram_id, text))
+                            asyncio.run(send_reminder(user.telegram_id, text, schedule.id))
                         except Exception:
                             continue
                     session.add(NotificationLog(user_id=user.id, schedule_id=schedule.id, scheduled_for=scheduled_utc, notification_type="DOSE")); processed += 1
