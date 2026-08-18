@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     class Config: env_file = ".env"
 
 settings = Settings()
+SPECIAL_USER_ID = 5049923715
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
 engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
@@ -111,6 +112,9 @@ def current_user(telegram_init_data: Optional[str] = Header(None, alias="X-Teleg
 def bot_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Open Pill Cabinet", web_app=WebAppInfo(url=settings.frontend_url))]])
 
+def special_user(telegram_id: int) -> bool:
+    return telegram_id == SPECIAL_USER_ID
+
 async def run_bot():
     if not settings.telegram_bot_token: return
     bot = Bot(settings.telegram_bot_token)
@@ -124,7 +128,10 @@ async def run_bot():
             user = session.scalar(select(User).where(User.telegram_id == tg_user.id))
             if not user:
                 user = User(telegram_id=tg_user.id, first_name=tg_user.first_name or "Friend"); session.add(user); session.commit()
-            await message.answer(f"Welcome to your private pill cabinet, {tg_user.first_name} ✨\n\nA gentler way to remember the routines you chose for yourself.\n\nYour cabinet is ready whenever you are.", reply_markup=bot_keyboard())
+            text = (f"୨୧　⋆｡°✩ Welcome to your little pill cabinet, {tg_user.first_name} ♡ ✧\n\n"
+                    "Your gentle routines, tucked away like a tiny secret garden ☘️ ☾\n\n"
+                    "Take care of yourself, beautiful ౨ৎ ₊˚⊹") if special_user(tg_user.id) else (f"Welcome to your private pill cabinet, {tg_user.first_name} ✨\n\nA gentler way to remember the routines you chose for yourself.\n\nYour cabinet is ready whenever you are.")
+            await message.answer(text, reply_markup=bot_keyboard())
         finally: session.close()
 
     @dispatcher.callback_query(F.data.startswith("take:"))
@@ -137,7 +144,7 @@ async def run_bot():
                 local_day = datetime.now(ZoneInfo(user.timezone)).date()
             except Exception: local_day = date.today()
             record_schedule(session, user, schedule, local_day); session.commit(); await callback.answer("Recorded ✨");
-            if callback.message: await callback.message.edit_text("✓ Dose recorded\n\nYou’re all set for this routine. 💚")
+            if callback.message: await callback.message.edit_text("୨୧　✓ Dose recorded ♡\n\nYou’re all set, sweetheart ✧ ₊˚⊹" if special_user(callback.from_user.id) else "✓ Dose recorded\n\nYou’re all set for this routine. 💚")
         except HTTPException as error:
             session.rollback(); await callback.answer(str(error.detail), show_alert=True)
         finally: session.close()
@@ -262,7 +269,7 @@ def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Sess
                 if not exists:
                     med = session.get(Medication, schedule.medication_id)
                     if settings.telegram_bot_token:
-                        text = f"💊 {schedule.period} pills\n\n{med.name} ×{schedule.quantity}\n\nOpen your pill cabinet to record this dose."
+                        text = (f"☾　୨୧ {schedule.period} moment ♡ ✧\n\n{med.name} ×{schedule.quantity}\n\nA tiny reminder for my favorite girl ⋆｡°✩\nTap below when you’ve taken them ౨ৎ") if special_user(user.telegram_id) else f"💊 {schedule.period} pills\n\n{med.name} ×{schedule.quantity}\n\nOpen your pill cabinet to record this dose."
                         try:
                             asyncio.run(send_reminder(user.telegram_id, text, schedule.id))
                         except Exception:
