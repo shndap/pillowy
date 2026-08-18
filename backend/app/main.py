@@ -144,7 +144,9 @@ def add_schedule(medication_id: int, body: ScheduleIn, user: User = Depends(curr
 @app.delete("/schedules/{schedule_id}")
 def delete_schedule(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id == schedule_id, Medication.user_id == user.id))
-    if not schedule: raise HTTPException(404, "Schedule not found")
+    # Deletion is intentionally idempotent: a retry after a successful delete
+    # should still leave the client in the desired state.
+    if not schedule: return {"deleted": False}
     session.delete(schedule); session.commit(); return {"deleted": True}
 @app.patch("/schedules/{schedule_id}")
 def edit_schedule(schedule_id: int, body: SchedulePatch, user: User = Depends(current_user), session: Session = Depends(db)):
