@@ -250,17 +250,30 @@ async def send_reminder(chat_id: int, text: str, schedule_id: int):
 async def send_low_stock_reminder(chat_id: int, text: str):
     async with Bot(settings.telegram_bot_token) as bot:
         await bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Open pill cabinet", web_app=WebAppInfo(url=settings.frontend_url))]]))
+def notify_low_supply(user: User, medication: Medication, warning: Optional[str]):
+    if not warning or not settings.telegram_bot_token: return
+    text = (f"୨୧　☘️ A tiny cabinet reminder ♡\n\n{warning}\n\nA little restock might be lovely ⋆｡°✩" if special_user(user.telegram_id) else f"⚠️ Running low\n\n{warning}\n\nConsider adding more to your cabinet.")
+    try: asyncio.run(send_low_stock_reminder(user.telegram_id, text))
+    except Exception: pass
 @app.post("/schedules/{schedule_id}/take")
 def take(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id==schedule_id, Medication.user_id==user.id));
     if not schedule: raise HTTPException(404, "Schedule not found")
-    changed = record_schedule(session,user,schedule,date.today()); session.commit(); return {"recorded":changed,"warnings":warnings_for(session,{schedule.medication_id})}
+    changed = record_schedule(session,user,schedule,date.today()); session.commit()
+    warning = supply_warning(session, session.get(Medication, schedule.medication_id))
+    notify_low_supply(user, session.get(Medication, schedule.medication_id), warning)
+    return {"recorded":changed,"warnings":[warning] if warning else []}
 @app.post("/today/take-all")
 def take_all(period: str = "Morning", user: User = Depends(current_user), session: Session = Depends(db)):
     schedules = session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id, Schedule.period==period, Schedule.enabled==True)).all(); count=0; medication_ids=set()
     for schedule in schedules:
         if record_schedule(session,user,schedule,date.today()): count += 1; medication_ids.add(schedule.medication_id)
-    session.commit(); return {"recorded":count,"message":f"{period} pills recorded","warnings":warnings_for(session,medication_ids)}
+    session.commit()
+    warnings = warnings_for(session, medication_ids)
+    for medication_id in medication_ids:
+        medication = session.get(Medication, medication_id)
+        notify_low_supply(user, medication, supply_warning(session, medication))
+    return {"recorded":count,"message":f"{period} pills recorded","warnings":warnings}
 @app.get("/today")
 def today(user: User = Depends(current_user), session: Session = Depends(db)):
     schedules=session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id,Schedule.enabled==True)).all(); day=date.today(); groups={}
