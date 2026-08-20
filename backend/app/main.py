@@ -101,12 +101,19 @@ def verify_init_data(raw: str) -> dict:
     check = hmac.new(secret, "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs)).encode(), sha256).hexdigest()
     if not hmac.compare_digest(check, received): raise HTTPException(401, "Invalid Telegram signature")
     user = json.loads(pairs.get("user", "{}")); return user
-def current_user(telegram_init_data: Optional[str] = Header(None, alias="X-Telegram-Init-Data"), session: Session = Depends(db)) -> User:
+def current_user(telegram_init_data: Optional[str] = Header(None, alias="X-Telegram-Init-Data"), timezone_name: Optional[str] = Header(None, alias="X-Timezone"), session: Session = Depends(db)) -> User:
     info = verify_init_data(telegram_init_data or ""); tid = info.get("id")
     if tid == "demo": tid = 10001
     user = session.scalar(select(User).where(User.telegram_id == int(tid)))
+    try:
+        if timezone_name: ZoneInfo(timezone_name)
+        else: timezone_name = "UTC"
+    except Exception:
+        timezone_name = "UTC"
     if not user:
-        user = User(telegram_id=int(tid), first_name=info.get("first_name", "Friend")); session.add(user); session.commit(); session.refresh(user)
+        user = User(telegram_id=int(tid), first_name=info.get("first_name", "Friend"), timezone=timezone_name); session.add(user); session.commit(); session.refresh(user)
+    elif timezone_name != "UTC" and user.timezone != timezone_name:
+        user.timezone = timezone_name; session.commit()
     return user
 
 def bot_keyboard():
@@ -286,7 +293,7 @@ def history(user: User = Depends(current_user), session: Session = Depends(db)):
 @app.post("/internal/scheduler/tick")
 def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Session=Depends(db)):
     if not hmac.compare_digest(x_scheduler_secret or "", settings.scheduler_secret): raise HTTPException(403,"Forbidden")
-    now = datetime.now(timezone.utc).replace(tzinfo=None); cutoff = now - timedelta(minutes=10); processed = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None); cutoff = now - timedelta(minutes=15); processed = 0
     # The unique database key makes this safe when an external cron retries a tick.
     for user in session.scalars(select(User)).all():
         try: local_now = datetime.now(ZoneInfo(user.timezone))
@@ -321,4 +328,4 @@ def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Sess
                     except Exception: continue
                 session.add(NotificationLog(user_id=user.id, schedule_id=anchor.id, scheduled_for=scheduled_for, notification_type="LOW_STOCK")); processed += 1
     session.commit()
-    return {"processed":processed,"status":"ok","window_minutes":10}
+    return {"processed":processed,"status":"ok","window_minutes":15}
