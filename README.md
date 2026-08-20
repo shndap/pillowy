@@ -31,4 +31,13 @@ Copy `.env.example` to `.env` and set the bot token and scheduler secret. The ba
 - Database: Supabase PostgreSQL via `DATABASE_URL`.
 - Scheduler: any free external HTTP cron calling the protected tick endpoint once per minute.
 
+## GitHub Actions scheduler
+
+The repository includes `.github/workflows/scheduler.yml`. In GitHub, open **Settings → Secrets and variables → Actions** and add:
+
+- `SCHEDULER_URL` = `https://pillowy-api.onrender.com/internal/scheduler/tick`
+- `SCHEDULER_SECRET` = the same value configured as Render's `SCHEDULER_SECRET`
+
+The workflow runs every five minutes and can also be started manually from the **Actions** tab. The backend's idempotency key prevents duplicate reminders when a run is retried.
+
 Never place Telegram, Supabase secret, Render, or Cloudflare credentials in this repository or frontend environment variables.
