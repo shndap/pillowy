@@ -52,7 +52,10 @@ def test_take_dose_decreases_inventory_and_creates_intake(client):
     response = client.post(f"/schedules/{schedule_id}/take")
 
     assert response.status_code == 200
-    assert response.json() == {"recorded": True}
+    assert response.json() == {
+        "recorded": True,
+        "warnings": ["Magnesium has 8 pills left — about 4 days of supply."],
+    }
     meds = client.get("/medications").json()
     assert meds[0]["id"] == medication_id
     assert meds[0]["inventory"] == 8
@@ -62,8 +65,14 @@ def test_take_dose_decreases_inventory_and_creates_intake(client):
 def test_repeated_take_is_idempotent(client):
     _, schedule_id = add_medication(client)
 
-    assert client.post(f"/schedules/{schedule_id}/take").json() == {"recorded": True}
-    assert client.post(f"/schedules/{schedule_id}/take").json() == {"recorded": False}
+    assert client.post(f"/schedules/{schedule_id}/take").json() == {
+        "recorded": True,
+        "warnings": ["Magnesium has 8 pills left — about 4 days of supply."],
+    }
+    assert client.post(f"/schedules/{schedule_id}/take").json() == {
+        "recorded": False,
+        "warnings": ["Magnesium has 8 pills left — about 4 days of supply."],
+    }
     assert client.get("/medications").json()[0]["inventory"] == 8
     assert len(client.get("/history").json()) == 1
 
@@ -133,3 +142,15 @@ def test_warning_uses_total_daily_quantity_for_two_daily_doses(client):
         assert supply_warning(session, medication) == "Magnesium has 14 pills left — about 7 days of supply."
     finally:
         session.close()
+
+
+def test_taking_pills_returns_seven_day_warning(client):
+    medication_id = client.post("/medications", json={"name": "Vitamin C", "inventory": 8}).json()["id"]
+    schedule_id = client.post(
+        f"/medications/{medication_id}/schedules",
+        json={"period": "Morning", "at": "08:00:00", "quantity": 1},
+    ).json()["id"]
+
+    response = client.post(f"/schedules/{schedule_id}/take")
+
+    assert response.json()["warnings"] == ["Vitamin C has 7 pills left — about 7 days of supply."]

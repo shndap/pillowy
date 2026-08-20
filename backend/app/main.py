@@ -143,8 +143,11 @@ async def run_bot():
             try:
                 local_day = datetime.now(ZoneInfo(user.timezone)).date()
             except Exception: local_day = date.today()
-            record_schedule(session, user, schedule, local_day); session.commit(); await callback.answer("Recorded ✨");
-            if callback.message: await callback.message.edit_text("୨୧　✓ Dose recorded ♡\n\nYou’re all set, sweetheart ✧ ₊˚⊹" if special_user(callback.from_user.id) else "✓ Dose recorded\n\nYou’re all set for this routine. 💚")
+            record_schedule(session, user, schedule, local_day)
+            warning = supply_warning(session, session.get(Medication, schedule.medication_id))
+            session.commit(); await callback.answer("Recorded ✨")
+            warning_text = f"\n\n⚠️ {warning}" if warning else ""
+            if callback.message: await callback.message.edit_text(("୨୧　✓ Dose recorded ♡\n\nYou’re all set, sweetheart ✧ ₊˚⊹" if special_user(callback.from_user.id) else "✓ Dose recorded\n\nYou’re all set for this routine. 💚") + warning_text)
         except HTTPException as error:
             session.rollback(); await callback.answer(str(error.detail), show_alert=True)
         finally: session.close()
