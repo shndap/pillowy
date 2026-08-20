@@ -233,6 +233,9 @@ def record_schedule(session: Session, user: User, schedule: Schedule, day: date)
 async def send_reminder(chat_id: int, text: str, schedule_id: int):
     async with Bot(settings.telegram_bot_token) as bot:
         await bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✓ I took these pills", callback_data=f"take:{schedule_id}")],[InlineKeyboardButton(text="Open pill cabinet", web_app=WebAppInfo(url=settings.frontend_url))]]))
+async def send_low_stock_reminder(chat_id: int, text: str):
+    async with Bot(settings.telegram_bot_token) as bot:
+        await bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Open pill cabinet", web_app=WebAppInfo(url=settings.frontend_url))]]))
 @app.post("/schedules/{schedule_id}/take")
 def take(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id==schedule_id, Medication.user_id==user.id));
@@ -275,5 +278,17 @@ def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Sess
                         except Exception:
                             continue
                     session.add(NotificationLog(user_id=user.id, schedule_id=schedule.id, scheduled_for=scheduled_utc, notification_type="DOSE")); processed += 1
+        # Send one low-inventory reminder per medication per local day.
+        for med in session.scalars(select(Medication).where(Medication.user_id == user.id, Medication.active == True, Medication.inventory < 10)).all():
+            anchor = session.scalar(select(Schedule).where(Schedule.medication_id == med.id, Schedule.enabled == True).order_by(Schedule.id))
+            if not anchor: continue
+            scheduled_for = datetime.combine(local_day, time.min)
+            exists = session.scalar(select(NotificationLog).where(NotificationLog.user_id == user.id, NotificationLog.schedule_id == anchor.id, NotificationLog.scheduled_for == scheduled_for, NotificationLog.notification_type == "LOW_STOCK"))
+            if not exists:
+                text = (f"୨୧　☘️ A tiny cabinet reminder ♡\n\n{med.name} has only {med.inventory} pills left.\n\nA little restock might be lovely ⋆｡°✩") if special_user(user.telegram_id) else f"⚠️ Running low\n\n{med.name} has {med.inventory} pills left.\n\nConsider adding more to your cabinet."
+                if settings.telegram_bot_token:
+                    try: asyncio.run(send_low_stock_reminder(user.telegram_id, text))
+                    except Exception: continue
+                session.add(NotificationLog(user_id=user.id, schedule_id=anchor.id, scheduled_for=scheduled_for, notification_type="LOW_STOCK")); processed += 1
     session.commit()
     return {"processed":processed,"status":"ok","window_minutes":10}

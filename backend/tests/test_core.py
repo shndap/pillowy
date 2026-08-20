@@ -99,3 +99,21 @@ def test_purchase_increases_inventory(client):
 
 def test_scheduler_requires_secret(client):
     assert client.post("/internal/scheduler/tick", headers={"X-Scheduler-Secret": "wrong"}).status_code == 403
+
+
+def test_scheduler_sends_low_stock_reminder_once(client):
+    medication_id = client.post("/medications", json={"name": "Omega 3", "inventory": 9}).json()["id"]
+    client.post(f"/medications/{medication_id}/schedules", json={"period": "Morning", "at": "00:00:00", "quantity": 1})
+    headers = {"X-Scheduler-Secret": "change-me"}
+
+    first = client.post("/internal/scheduler/tick", headers=headers)
+    second = client.post("/internal/scheduler/tick", headers=headers)
+
+    assert first.status_code == 200
+    assert first.json()["processed"] == 1
+    assert second.json()["processed"] == 0
+    session = SessionLocal()
+    try:
+        assert session.query(NotificationLog).filter_by(notification_type="LOW_STOCK").count() == 1
+    finally:
+        session.close()
