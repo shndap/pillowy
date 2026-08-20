@@ -230,6 +230,17 @@ def record_schedule(session: Session, user: User, schedule: Schedule, day: date)
     med = session.get(Medication, schedule.medication_id)
     if med.inventory < schedule.quantity: raise HTTPException(409, f"Not enough {med.name} pills")
     med.inventory -= schedule.quantity; session.add(Intake(user_id=user.id, medication_id=med.id, schedule_id=schedule.id, taken_on=day, quantity=schedule.quantity)); session.add(InventoryTransaction(medication_id=med.id, quantity=-schedule.quantity, transaction_type="INTAKE")); return True
+def supply_warning(session: Session, medication: Medication) -> Optional[str]:
+    daily = sum(s.quantity for s in medication.schedules if s.enabled)
+    if daily <= 0 or medication.inventory > daily * 7: return None
+    days = medication.inventory // daily
+    return f"{medication.name} has {medication.inventory} pills left — about {days} days of supply."
+def warnings_for(session: Session, medication_ids: set[int]) -> list[str]:
+    warnings = []
+    for medication_id in medication_ids:
+        warning = supply_warning(session, session.get(Medication, medication_id))
+        if warning: warnings.append(warning)
+    return warnings
 async def send_reminder(chat_id: int, text: str, schedule_id: int):
     async with Bot(settings.telegram_bot_token) as bot:
         await bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✓ I took these pills", callback_data=f"take:{schedule_id}")],[InlineKeyboardButton(text="Open pill cabinet", web_app=WebAppInfo(url=settings.frontend_url))]]))
@@ -240,12 +251,13 @@ async def send_low_stock_reminder(chat_id: int, text: str):
 def take(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id==schedule_id, Medication.user_id==user.id));
     if not schedule: raise HTTPException(404, "Schedule not found")
-    changed = record_schedule(session,user,schedule,date.today()); session.commit(); return {"recorded":changed}
+    changed = record_schedule(session,user,schedule,date.today()); session.commit(); return {"recorded":changed,"warnings":warnings_for(session,{schedule.medication_id})}
 @app.post("/today/take-all")
 def take_all(period: str = "Morning", user: User = Depends(current_user), session: Session = Depends(db)):
-    schedules = session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id, Schedule.period==period, Schedule.enabled==True)).all(); count=0
-    for schedule in schedules: count += int(record_schedule(session,user,schedule,date.today()))
-    session.commit(); return {"recorded":count,"message":f"{period} pills recorded"}
+    schedules = session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id, Schedule.period==period, Schedule.enabled==True)).all(); count=0; medication_ids=set()
+    for schedule in schedules:
+        if record_schedule(session,user,schedule,date.today()): count += 1; medication_ids.add(schedule.medication_id)
+    session.commit(); return {"recorded":count,"message":f"{period} pills recorded","warnings":warnings_for(session,medication_ids)}
 @app.get("/today")
 def today(user: User = Depends(current_user), session: Session = Depends(db)):
     schedules=session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id,Schedule.enabled==True)).all(); day=date.today(); groups={}
@@ -279,13 +291,15 @@ def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Sess
                             continue
                     session.add(NotificationLog(user_id=user.id, schedule_id=schedule.id, scheduled_for=scheduled_utc, notification_type="DOSE")); processed += 1
         # Send one low-inventory reminder per medication per local day.
-        for med in session.scalars(select(Medication).where(Medication.user_id == user.id, Medication.active == True, Medication.inventory < 10)).all():
+        for med in session.scalars(select(Medication).where(Medication.user_id == user.id, Medication.active == True)).all():
+            if not supply_warning(session, med): continue
             anchor = session.scalar(select(Schedule).where(Schedule.medication_id == med.id, Schedule.enabled == True).order_by(Schedule.id))
             if not anchor: continue
             scheduled_for = datetime.combine(local_day, time.min)
             exists = session.scalar(select(NotificationLog).where(NotificationLog.user_id == user.id, NotificationLog.schedule_id == anchor.id, NotificationLog.scheduled_for == scheduled_for, NotificationLog.notification_type == "LOW_STOCK"))
             if not exists:
-                text = (f"୨୧　☘️ A tiny cabinet reminder ♡\n\n{med.name} has only {med.inventory} pills left.\n\nA little restock might be lovely ⋆｡°✩") if special_user(user.telegram_id) else f"⚠️ Running low\n\n{med.name} has {med.inventory} pills left.\n\nConsider adding more to your cabinet."
+                warning = supply_warning(session, med)
+                text = (f"୨୧　☘️ A tiny cabinet reminder ♡\n\n{warning}\n\nA little restock might be lovely ⋆｡°✩") if special_user(user.telegram_id) else f"⚠️ Running low\n\n{warning}\n\nConsider adding more to your cabinet."
                 if settings.telegram_bot_token:
                     try: asyncio.run(send_low_stock_reminder(user.telegram_id, text))
                     except Exception: continue

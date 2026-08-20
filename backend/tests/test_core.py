@@ -13,6 +13,8 @@ from app.main import (
     SessionLocal,
     User,
     app,
+    record_schedule,
+    supply_warning,
 )
 
 
@@ -101,8 +103,8 @@ def test_scheduler_requires_secret(client):
     assert client.post("/internal/scheduler/tick", headers={"X-Scheduler-Secret": "wrong"}).status_code == 403
 
 
-def test_scheduler_sends_low_stock_reminder_once(client):
-    medication_id = client.post("/medications", json={"name": "Omega 3", "inventory": 9}).json()["id"]
+def test_scheduler_sends_seven_day_supply_reminder_once(client):
+    medication_id = client.post("/medications", json={"name": "Omega 3", "inventory": 7}).json()["id"]
     client.post(f"/medications/{medication_id}/schedules", json={"period": "Morning", "at": "00:00:00", "quantity": 1})
     headers = {"X-Scheduler-Secret": "change-me"}
 
@@ -115,5 +117,19 @@ def test_scheduler_sends_low_stock_reminder_once(client):
     session = SessionLocal()
     try:
         assert session.query(NotificationLog).filter_by(notification_type="LOW_STOCK").count() == 1
+    finally:
+        session.close()
+
+
+def test_warning_uses_total_daily_quantity_for_two_daily_doses(client):
+    medication_id = client.post("/medications", json={"name": "Magnesium", "inventory": 20}).json()["id"]
+    client.post(f"/medications/{medication_id}/schedules", json={"period": "Morning", "at": "08:00:00", "quantity": 1})
+    client.post(f"/medications/{medication_id}/schedules", json={"period": "Evening", "at": "20:00:00", "quantity": 1})
+    session = SessionLocal()
+    try:
+        medication = session.get(Medication, medication_id)
+        medication.inventory = 14
+        session.commit()
+        assert supply_warning(session, medication) == "Magnesium has 14 pills left — about 7 days of supply."
     finally:
         session.close()

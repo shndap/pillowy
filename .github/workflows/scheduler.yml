@@ -3,9 +3,9 @@ name: Pill reminder scheduler
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions cron is UTC. This runs every five minutes and the API
+    # GitHub Actions cron is UTC. This requests a run every minute and the API
     # handles each user's timezone and the missed-reminder window.
-    - cron: "*/5 * * * *"
+    - cron: "* * * * *"
 
 permissions: {}
 
@@ -26,4 +26,3 @@ jobs:
             --request POST "$SCHEDULER_URL" \
             --header "X-Scheduler-Secret: $SCHEDULER_SECRET" \
             --header "Accept: application/json"
-
