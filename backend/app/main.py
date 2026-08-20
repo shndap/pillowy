@@ -240,6 +240,9 @@ def record_schedule(session: Session, user: User, schedule: Schedule, day: date)
     med = session.get(Medication, schedule.medication_id)
     if med.inventory < schedule.quantity: raise HTTPException(409, f"Not enough {med.name} pills")
     med.inventory -= schedule.quantity; session.add(Intake(user_id=user.id, medication_id=med.id, schedule_id=schedule.id, taken_on=day, quantity=schedule.quantity)); session.add(InventoryTransaction(medication_id=med.id, quantity=-schedule.quantity, transaction_type="INTAKE")); return True
+def user_today(user: User) -> date:
+    try: return datetime.now(ZoneInfo(user.timezone)).date()
+    except Exception: return date.today()
 def supply_warning(session: Session, medication: Medication) -> Optional[str]:
     daily = sum(s.quantity for s in medication.schedules if s.enabled)
     if daily <= 0 or medication.inventory > daily * 7: return None
@@ -266,7 +269,7 @@ def notify_low_supply(user: User, medication: Medication, warning: Optional[str]
 def take(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id==schedule_id, Medication.user_id==user.id));
     if not schedule: raise HTTPException(404, "Schedule not found")
-    changed = record_schedule(session,user,schedule,date.today()); session.commit()
+    changed = record_schedule(session,user,schedule,user_today(user)); session.commit()
     warning = supply_warning(session, session.get(Medication, schedule.medication_id))
     notify_low_supply(user, session.get(Medication, schedule.medication_id), warning)
     return {"recorded":changed,"warnings":[warning] if warning else []}
@@ -274,7 +277,7 @@ def take(schedule_id: int, user: User = Depends(current_user), session: Session 
 def take_all(period: str = "Morning", user: User = Depends(current_user), session: Session = Depends(db)):
     schedules = session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id, Schedule.period==period, Schedule.enabled==True)).all(); count=0; medication_ids=set()
     for schedule in schedules:
-        if record_schedule(session,user,schedule,date.today()): count += 1; medication_ids.add(schedule.medication_id)
+        if record_schedule(session,user,schedule,user_today(user)): count += 1; medication_ids.add(schedule.medication_id)
     session.commit()
     warnings = warnings_for(session, medication_ids)
     for medication_id in medication_ids:
@@ -283,7 +286,7 @@ def take_all(period: str = "Morning", user: User = Depends(current_user), sessio
     return {"recorded":count,"message":f"{period} pills recorded","warnings":warnings}
 @app.get("/today")
 def today(user: User = Depends(current_user), session: Session = Depends(db)):
-    schedules=session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id,Schedule.enabled==True)).all(); day=date.today(); groups={}
+    schedules=session.scalars(select(Schedule).join(Medication).where(Medication.user_id==user.id,Schedule.enabled==True)).all(); day=user_today(user); groups={}
     for s in schedules:
         med=session.get(Medication,s.medication_id); taken=session.scalar(select(Intake).where(Intake.schedule_id==s.id,Intake.taken_on==day)); groups.setdefault(s.period,[]).append({"schedule_id":s.id,"medication_id":med.id,"name":med.name,"quantity":s.quantity,"taken":bool(taken),"at":s.at.strftime("%H:%M")})
     return {"date":day.isoformat(),"groups":groups}
