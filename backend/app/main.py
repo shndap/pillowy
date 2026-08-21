@@ -188,6 +188,10 @@ class MedicationPatch(BaseModel): name: Optional[str] = Field(None, min_length=1
 class SchedulePatch(BaseModel): period: Optional[str] = None; at: Optional[time] = None; quantity: Optional[float] = Field(None, gt=0); reminder_enabled: Optional[bool] = None; enabled: Optional[bool] = None
 class PurchaseIn(BaseModel): quantity: float = Field(gt=0)
 class IntakeIn(BaseModel): schedule_id: int
+def ensure_quarter_hour(value: time):
+    if value.minute % 15 or value.second or value.microsecond:
+        raise HTTPException(422, "Reminder times must use 15-minute intervals")
+    return value
 
 @app.get("/health")
 def health(): return {"ok": True}
@@ -226,6 +230,7 @@ def delete_medication(medication_id: int, user: User = Depends(current_user), se
 def add_schedule(medication_id: int, body: ScheduleIn, user: User = Depends(current_user), session: Session = Depends(db)):
     med = session.scalar(select(Medication).where(Medication.id==medication_id, Medication.user_id==user.id))
     if not med: raise HTTPException(404, "Medication not found")
+    ensure_quarter_hour(body.at)
     schedule = Schedule(medication_id=med.id, **body.model_dump()); session.add(schedule); session.commit(); return {"id":schedule.id}
 @app.delete("/schedules/{schedule_id}")
 def delete_schedule(schedule_id: int, user: User = Depends(current_user), session: Session = Depends(db)):
@@ -238,6 +243,7 @@ def delete_schedule(schedule_id: int, user: User = Depends(current_user), sessio
 def edit_schedule(schedule_id: int, body: SchedulePatch, user: User = Depends(current_user), session: Session = Depends(db)):
     schedule = session.scalar(select(Schedule).join(Medication).where(Schedule.id == schedule_id, Medication.user_id == user.id))
     if not schedule: raise HTTPException(404, "Schedule not found")
+    if body.at is not None: ensure_quarter_hour(body.at)
     for key, value in body.model_dump(exclude_unset=True).items(): setattr(schedule, key, value)
     session.commit(); return {"updated": True}
 @app.post("/inventory/{medication_id}/purchase")

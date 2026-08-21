@@ -5,7 +5,7 @@ import {api} from './api';
 type Props={meds:any[];routines:Record<string,any[]>;reload:()=>void;reloadRoutines:()=>void;special?:boolean};
 export default function CabinetView({meds,routines,reload,reloadRoutines,special=false}:Props){
  const [section,setSection]=useState<'medications'|'routines'>('medications'); const [addOpen,setAddOpen]=useState(false); const [routineOpen,setRoutineOpen]=useState(false); const [editingRoutine,setEditingRoutine]=useState<any[]|null>(null); const [error,setError]=useState(''); const [selected,setSelected]=useState<any>(); const [name,setName]=useState(''); const [stock,setStock]=useState(''); const [period,setPeriod]=useState('Morning'); const [at,setAt]=useState('08:00'); const [amounts,setAmounts]=useState<Record<number,string>>({});
- const times=Array.from({length:288},(_,i)=>{const h=String(Math.floor(i/12)).padStart(2,'0');const m=String((i%12)*5).padStart(2,'0');return `${h}:${m}`});
+ const times=Array.from({length:96},(_,i)=>{const h=String(Math.floor(i/4)).padStart(2,'0');const m=String((i%4)*15).padStart(2,'0');return `${h}:${m}`});
  function choose(m:any){setSelected(m);setName(m.name);setStock(String(m.inventory));setAddOpen(true)}
  async function add(){if(!name)return;await api('/medications',{method:'POST',body:JSON.stringify({name,inventory:Number(stock)||0})});setAddOpen(false);setName('');setStock('');reload()}
  async function save(){await api(`/medications/${selected.id}`,{method:'PATCH',body:JSON.stringify({name,inventory:Number(stock)})});setSelected(undefined);reload()}

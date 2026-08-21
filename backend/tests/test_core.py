@@ -165,3 +165,13 @@ def test_fractional_dose_is_supported(client):
 
     assert response.status_code == 200
     assert client.get("/medications").json()[0]["schedules"][0]["quantity"] == 0.5
+
+
+def test_reminder_time_requires_fifteen_minute_interval(client):
+    medication_id = client.post("/medications", json={"name": "Quarter Hour", "inventory": 1}).json()["id"]
+    response = client.post(
+        f"/medications/{medication_id}/schedules",
+        json={"period": "Morning", "at": "08:10:00", "quantity": 1},
+    )
+
+    assert response.status_code == 422
