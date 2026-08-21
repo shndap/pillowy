@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, select
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Float, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 class Settings(BaseSettings):
@@ -48,7 +48,7 @@ class Medication(Base):
     name: Mapped[str] = mapped_column(String(120))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    inventory: Mapped[int] = mapped_column(Integer, default=0)
+    inventory: Mapped[float] = mapped_column(Float, default=0)
     schedules: Mapped[list["Schedule"]] = relationship(cascade="all, delete-orphan")
 class Schedule(Base):
     __tablename__ = "medication_schedules"
@@ -56,7 +56,7 @@ class Schedule(Base):
     medication_id: Mapped[int] = mapped_column(ForeignKey("medications.id"), index=True)
     period: Mapped[str] = mapped_column(String(32), default="Morning")
     at: Mapped[time] = mapped_column()
-    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    quantity: Mapped[float] = mapped_column(Float, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     reminder_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 class Intake(Base):
@@ -66,7 +66,7 @@ class Intake(Base):
     medication_id: Mapped[int] = mapped_column(ForeignKey("medications.id"))
     schedule_id: Mapped[int] = mapped_column(ForeignKey("medication_schedules.id"))
     taken_on: Mapped[date] = mapped_column(Date)
-    quantity: Mapped[int] = mapped_column(Integer)
+    quantity: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     __table_args__ = (UniqueConstraint("user_id", "schedule_id", "taken_on", name="uq_intake_schedule_day"),)
 class InventoryTransaction(Base):
@@ -87,6 +87,12 @@ class NotificationLog(Base):
     __table_args__ = (UniqueConstraint("user_id", "schedule_id", "scheduled_for", "notification_type", name="uq_notification"),)
 
 Base.metadata.create_all(engine)
+if settings.database_url.startswith("postgresql"):
+    with engine.begin() as migration:
+        migration.execute(text("ALTER TABLE medications ALTER COLUMN inventory TYPE DOUBLE PRECISION USING inventory::double precision"))
+        migration.execute(text("ALTER TABLE medication_schedules ALTER COLUMN quantity TYPE DOUBLE PRECISION USING quantity::double precision"))
+        migration.execute(text("ALTER TABLE intakes ALTER COLUMN quantity TYPE DOUBLE PRECISION USING quantity::double precision"))
+        migration.execute(text("ALTER TABLE inventory_transactions ALTER COLUMN quantity TYPE DOUBLE PRECISION USING quantity::double precision"))
 app = FastAPI(title="Pill Cabinet API")
 app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_url, "http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
 bot_task = None
@@ -174,11 +180,11 @@ async def start_bot_worker():
 async def stop_bot_worker():
     if bot_task: bot_task.cancel()
 
-class MedicationIn(BaseModel): name: str = Field(min_length=1, max_length=120); description: Optional[str] = None; inventory: int = Field(0, ge=0)
-class ScheduleIn(BaseModel): period: str = "Morning"; at: time; quantity: int = Field(1, ge=1); reminder_enabled: bool = True
-class MedicationPatch(BaseModel): name: Optional[str] = Field(None, min_length=1, max_length=120); description: Optional[str] = None; inventory: Optional[int] = Field(None, ge=0); active: Optional[bool] = None
-class SchedulePatch(BaseModel): period: Optional[str] = None; at: Optional[time] = None; quantity: Optional[int] = Field(None, ge=1); reminder_enabled: Optional[bool] = None; enabled: Optional[bool] = None
-class PurchaseIn(BaseModel): quantity: int = Field(gt=0)
+class MedicationIn(BaseModel): name: str = Field(min_length=1, max_length=120); description: Optional[str] = None; inventory: float = Field(0, ge=0)
+class ScheduleIn(BaseModel): period: str = "Morning"; at: time; quantity: float = Field(1, gt=0); reminder_enabled: bool = True
+class MedicationPatch(BaseModel): name: Optional[str] = Field(None, min_length=1, max_length=120); description: Optional[str] = None; inventory: Optional[float] = Field(None, ge=0); active: Optional[bool] = None
+class SchedulePatch(BaseModel): period: Optional[str] = None; at: Optional[time] = None; quantity: Optional[float] = Field(None, gt=0); reminder_enabled: Optional[bool] = None; enabled: Optional[bool] = None
+class PurchaseIn(BaseModel): quantity: float = Field(gt=0)
 class IntakeIn(BaseModel): schedule_id: int
 
 @app.get("/health")
