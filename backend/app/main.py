@@ -30,7 +30,7 @@ settings = Settings()
 if settings.database_url.startswith("postgresql://"):
     settings.database_url = settings.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 SPECIAL_USER_ID = 5049923715
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {"prepare_threshold": None}
 engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
