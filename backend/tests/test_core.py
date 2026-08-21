@@ -154,3 +154,14 @@ def test_taking_pills_returns_seven_day_warning(client):
     response = client.post(f"/schedules/{schedule_id}/take")
 
     assert response.json()["warnings"] == ["Vitamin C has 7 pills left — about 7 days of supply."]
+
+
+def test_fractional_dose_is_supported(client):
+    medication_id = client.post("/medications", json={"name": "Half Dose", "inventory": 2.5}).json()["id"]
+    response = client.post(
+        f"/medications/{medication_id}/schedules",
+        json={"period": "Night", "at": "22:00:00", "quantity": 0.5},
+    )
+
+    assert response.status_code == 200
+    assert client.get("/medications").json()[0]["schedules"][0]["quantity"] == 0.5
