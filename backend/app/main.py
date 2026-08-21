@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Float, String, Text, UniqueConstraint, create_engine, select, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, BigInteger, Float, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 class Settings(BaseSettings):
@@ -38,7 +38,7 @@ class Base(DeclarativeBase): pass
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_id: Mapped[int] = mapped_column(unique=True, index=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     first_name: Mapped[str] = mapped_column(String(120), default="Friend")
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
 class Medication(Base):
@@ -89,6 +89,7 @@ class NotificationLog(Base):
 Base.metadata.create_all(engine)
 if settings.database_url.startswith("postgresql"):
     with engine.begin() as migration:
+        migration.execute(text("ALTER TABLE users ALTER COLUMN telegram_id TYPE BIGINT USING telegram_id::bigint"))
         migration.execute(text("ALTER TABLE medications ALTER COLUMN inventory TYPE DOUBLE PRECISION USING inventory::double precision"))
         migration.execute(text("ALTER TABLE medication_schedules ALTER COLUMN quantity TYPE DOUBLE PRECISION USING quantity::double precision"))
         migration.execute(text("ALTER TABLE intakes ALTER COLUMN quantity TYPE DOUBLE PRECISION USING quantity::double precision"))
