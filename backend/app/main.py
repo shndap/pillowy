@@ -15,6 +15,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, BigInteger, Float, String, Text, UniqueConstraint, create_engine, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 class Settings(BaseSettings):
@@ -324,7 +325,12 @@ def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Sess
                             asyncio.run(send_reminder(user.telegram_id, text, schedule.id))
                         except Exception:
                             continue
-                    session.add(NotificationLog(user_id=user.id, schedule_id=schedule.id, scheduled_for=scheduled_utc, notification_type="DOSE")); processed += 1
+                    try:
+                        with session.begin_nested():
+                            session.add(NotificationLog(user_id=user.id, schedule_id=schedule.id, scheduled_for=scheduled_utc, notification_type="DOSE")); session.flush()
+                        processed += 1
+                    except IntegrityError:
+                        pass
         # Send one low-inventory reminder per medication per local day.
         for med in session.scalars(select(Medication).where(Medication.user_id == user.id, Medication.active == True)).all():
             if not supply_warning(session, med): continue
@@ -338,6 +344,11 @@ def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Sess
                 if settings.telegram_bot_token:
                     try: asyncio.run(send_low_stock_reminder(user.telegram_id, text))
                     except Exception: continue
-                session.add(NotificationLog(user_id=user.id, schedule_id=anchor.id, scheduled_for=scheduled_for, notification_type="LOW_STOCK")); processed += 1
+                try:
+                    with session.begin_nested():
+                        session.add(NotificationLog(user_id=user.id, schedule_id=anchor.id, scheduled_for=scheduled_for, notification_type="LOW_STOCK")); session.flush()
+                    processed += 1
+                except IntegrityError:
+                    pass
     session.commit()
     return {"processed":processed,"status":"ok","window_minutes":15}
