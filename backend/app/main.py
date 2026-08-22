@@ -312,7 +312,7 @@ def history(user: User = Depends(current_user), session: Session = Depends(db)):
 @app.post("/internal/scheduler/tick")
 def scheduler_tick(x_scheduler_secret: Optional[str]=Header(None), session: Session=Depends(db)):
     if not hmac.compare_digest(x_scheduler_secret or "", settings.scheduler_secret): raise HTTPException(403,"Forbidden")
-    now = datetime.now(timezone.utc).replace(tzinfo=None); cutoff = now - timedelta(minutes=15); processed = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None); cutoff = now - timedelta(minutes=75); processed = 0
     # The unique database key makes this safe when an external cron retries a tick.
     for user in session.scalars(select(User)).all():
         try: local_now = datetime.now(ZoneInfo(user.timezone))
